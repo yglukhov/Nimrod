@@ -2379,6 +2379,9 @@ when not defined(nimscript) and hasAlloc:
     ## forces a full garbage collection pass.
     ## Ordinary code does not need to call this (and should not).
 
+  proc GC_debugCellType*(p: pointer) {.rtl, benign.}
+  proc GC_objectShouldBeCollectedSoon*(o: ref) {.rtl, benign.}
+
   type
     GC_Strategy* = enum ## the strategy the GC should use for the application
       gcThroughput,      ## optimize for throughput

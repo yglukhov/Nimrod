@@ -88,6 +88,9 @@ type
       maxPause: Nanos        # max allowed pause in nanoseconds; active if > 0
     region: MemRegion        # garbage collected region
     stat: GcStat
+    debugCell: PCell
+    markStackFieldNames: array[50, cstring]
+    markStack: CellSeq
     when useMarkForDebug or useBackupGc:
       marked: CellSet
       additionalRoots: CellSeq # dummy roots for GC_ref/unref
@@ -98,6 +101,13 @@ type
               TGcStat: GcStat].}
 var
   gch {.rtlThreadVar.}: GcHeap
+
+template pushMarkStack(p: PCell) =
+  gch.markStackFieldNames[gch.markStack.len] = nil
+  gch.markStack.add(p)
+
+template popMarkStack() =
+  dec gch.markStack.len
 
 when not defined(useNimRtl):
   instantiateForRegion(gch.region)
@@ -151,12 +161,112 @@ template setColor(c, col) =
   else:
     c.refcount = c.refcount and not colorMask or col
 
+proc isOnStack(p: pointer): bool {.noinline, benign.}
+
+template offStr(s: cstring, offset: int): cstring =
+  cast[cstring](cast[uint](addr s[0]) + cast[uint](offset))
+
+template append(s: var cstring, fmt: cstring): untyped =
+  let o = c_sprintf(s, fmt)
+  s = offStr(s, o)
+
+template append(s: var cstring, fmt: cstring, a1: untyped): untyped =
+  let o = c_sprintf(s, fmt, a1)
+  s = offStr(s, o)
+
+proc typToStringAux(t: PNimType, output: var cstring)
+
+proc nodeToStringAux(n: ptr TNimNode, output: var cstring) =
+  if n.isNil:
+    output.append("nil")
+    return
+  if not n.name.isNil:
+    output.append(n.name)
+    output.append(":")
+    typToStringAux(n.typ, output)
+  else:
+    for i in 0 .. n.len - 1:
+      if i > 0: output.append(",")
+      nodeToStringAux(n.sons[i], output)
+
+proc typToStringAux(t: PNimType, output: var cstring) =
+  if t.isNil:
+    output.append("nil")
+    return
+
+  var typStack {.global, threadvar.}: array[1000, PNimType]
+  var typStackLen {.global, threadvar.}: int
+
+  for i in 0 .. typStackLen - 1:
+    if typStack[i] == t:
+      output.append("recursion")
+      return
+
+  typStack[typStackLen] = t
+  inc typStackLen
+  case t.kind
+  of tyRef:
+    output.append("ref[")
+    typToStringAux(t.base, output)
+    output.append("]")
+  of tyPtr:
+    output.append("ptr[")
+    typToStringAux(t.base, output)
+    output.append("]")
+  of tyObject:
+    output.append("object[")
+    nodeToStringAux(t.node, output)
+    output.append("]")
+  of tyTuple:
+    output.append("tuple[")
+    nodeToStringAux(t.node, output)
+    output.append("]")
+  of tyArrayConstr:
+    output.append("arrayconstr[")
+  of tyArray:
+    output.append("array[")
+  of tySequence:
+    output.append("seq[")
+  of tyBool: output.append("bool")
+  of tyChar: output.append("char")
+  of tyString: output.append("string")
+  of tyCString: output.append("cstring")
+  of tyInt: output.append("int")
+  of tyInt8: output.append("int8")
+  of tyInt16: output.append("int16")
+  of tyInt32: output.append("int32")
+  of tyInt64: output.append("int64")
+  of tyFloat: output.append("float")
+  of tyFloat32: output.append("float32")
+  of tyFloat64: output.append("float64")
+  of tyFloat128: output.append("float128")
+  of tyUInt: output.append("uint")
+  of tyUInt8: output.append("uint8")
+  of tyUInt16: output.append("uint16")
+  of tyUInt32: output.append("uint32")
+  of tyUInt64: output.append("uint64")
+  else:
+    output.append("other[%d]", cint(t.kind))
+  dec typStackLen
+
+proc typToString(t: PNimType): cstring =
+  var output {.global, threadvar.}: array[1024 * 1024, char]
+  var r = cast[cstring](addr output[0])
+  #typToStringAux(t, r)
+  result = cast[cstring](addr output[0])
+
 proc writeCell(msg: cstring, c: PCell) =
   var kind = -1
-  if c.typ != nil: kind = ord(c.typ.kind)
+  if c.typ != nil:
+    kind = ord(c.typ.kind)
+
   when leakDetector:
-    c_fprintf(stdout, "[GC] %s: %p %d rc=%ld from %s(%ld)\n",
-              msg, c, kind, c.refcount shr rcShift, c.filename, c.line)
+    # if isOnStack(c):
+    #   c_fprintf(stdout, "[GC] %s: %p %d rc=%ld; color=%ld\n",
+    #             msg, c, kind, c.refcount shr rcShift, c.color)
+    # else:
+      c_fprintf(stdout, "[GC] %s: %p %s rc=%ld from %s(%ld)\n",
+                msg, c, typToString(c.typ), c.refcount shr rcShift, c.filename, c.line)
   else:
     c_fprintf(stdout, "[GC] %s: %p %d rc=%ld; color=%ld\n",
               msg, c, kind, c.refcount shr rcShift, c.color)
@@ -166,7 +276,6 @@ template gcTrace(cell, state: expr): stmt {.immediate.} =
 
 # forward declarations:
 proc collectCT(gch: var GcHeap) {.benign.}
-proc isOnStack(p: pointer): bool {.noinline, benign.}
 proc forAllChildren(cell: PCell, op: WalkOp) {.benign.}
 proc doOperation(p: pointer, op: WalkOp) {.benign.}
 proc forAllChildrenAux(dest: pointer, mt: PNimType, op: WalkOp) {.benign.}
@@ -311,6 +420,8 @@ proc initGC() =
     init(gch.zct)
     init(gch.tempStack)
     init(gch.decStack)
+    init(gch.markStack)
+
     when useMarkForDebug or useBackupGc:
       init(gch.marked)
       init(gch.additionalRoots)
@@ -348,6 +459,7 @@ proc forAllSlotsAux(dest: pointer, n: ptr TNimNode, op: WalkOp) {.benign.} =
       # inlined for speed
       if n.sons[i].kind == nkSlot:
         if n.sons[i].typ.kind in {tyRef, tyString, tySequence}:
+          gch.markStackFieldNames[gch.markStack.len - 1] = n.sons[i].name
           doOperation(cast[PPointer](d +% n.sons[i].offset)[], op)
         else:
           forAllChildrenAux(cast[pointer](d +% n.sons[i].offset),
@@ -378,6 +490,8 @@ proc forAllChildren(cell: PCell, op: WalkOp) =
   gcAssert(isAllocatedPtr(gch.region, cell), "forAllChildren: 2")
   gcAssert(cell.typ != nil, "forAllChildren: 3")
   gcAssert cell.typ.kind in {tyRef, tySequence, tyString}, "forAllChildren: 4"
+  pushMarkStack(cell)
+
   let marker = cell.typ.marker
   if marker != nil:
     marker(cellToUsr(cell), op.int)
@@ -393,6 +507,8 @@ proc forAllChildren(cell: PCell, op: WalkOp) =
           forAllChildrenAux(cast[pointer](d +% i *% cell.typ.base.size +%
             GenericSeqSize), cell.typ.base, op)
     else: discard
+
+  popMarkStack()
 
 proc addNewObjToZCT(res: PCell, gch: var GcHeap) {.inline.} =
   # we check the last 8 entries (cache line) for a slot that could be reused.
@@ -445,6 +561,19 @@ proc gcInvariant*() =
     markForDebug(gch)
 {.pop.}
 
+template setFrameInfo(c: PCell) =
+  when leakDetector:
+    c.filename = nil
+    c.line = 0
+    when true or not hasThreadSupport:
+      if framePtr != nil and framePtr.prev != nil:
+        var fr = framePtr.prev
+        while not fr.prev.isNil and
+            (c_strcmp(fr.filename, "system.nim") == 0 or c_strcmp(fr.filename, "gc.nim") == 0):
+          fr = fr.prev
+        c.filename = fr.filename
+        c.line = fr.line
+
 proc rawNewObj(typ: PNimType, size: int, gch: var GcHeap): pointer =
   # generates a new object and sets its reference counter to 0
   sysAssert(allocInv(gch.region), "rawNewObj begin")
@@ -455,13 +584,7 @@ proc rawNewObj(typ: PNimType, size: int, gch: var GcHeap): pointer =
   gcAssert((cast[ByteAddress](res) and (MemAlign-1)) == 0, "newObj: 2")
   # now it is buffered in the ZCT
   res.typ = typ
-  when leakDetector:
-    res.filename = nil
-    res.line = 0
-    when not hasThreadSupport:
-      if framePtr != nil and framePtr.prev != nil:
-        res.filename = framePtr.prev.filename
-        res.line = framePtr.prev.line
+  res.setFrameInfo()
   # refcount is zero, color is black, but mark it to be in the ZCT
   res.refcount = ZctFlag
   sysAssert(isAllocatedPtr(gch.region, res), "newObj: 3")
@@ -509,13 +632,7 @@ proc newObjRC1(typ: PNimType, size: int): pointer {.compilerRtl.} =
   sysAssert((cast[ByteAddress](res) and (MemAlign-1)) == 0, "newObj: 2")
   # now it is buffered in the ZCT
   res.typ = typ
-  when leakDetector:
-    res.filename = nil
-    res.line = 0
-    when not hasThreadSupport:
-      if framePtr != nil and framePtr.prev != nil:
-        res.filename = framePtr.prev.filename
-        res.line = framePtr.prev.line
+  res.setFrameInfo()
   res.refcount = rcIncrement # refcount is 1
   sysAssert(isAllocatedPtr(gch.region, res), "newObj: 3")
   when logGC: writeCell("new cell", res)
@@ -619,10 +736,12 @@ when useBackupGc:
       if isCell(x):
         # cast to PCell is correct here:
         var c = cast[PCell](x)
-        if c notin gch.marked: freeCyclicCell(gch, c)
+        if c notin gch.marked:
+          freeCyclicCell(gch, c)
 
 when useMarkForDebug or useBackupGc:
   proc markS(gch: var GcHeap, c: PCell) =
+    pushMarkStack(c)
     incl(gch.marked, c)
     gcAssert gch.tempStack.len == 0, "stack not empty!"
     forAllChildren(c, waMarkPrecise)
@@ -631,6 +750,7 @@ when useMarkForDebug or useBackupGc:
       var d = gch.tempStack.d[gch.tempStack.len]
       if not containsOrIncl(gch.marked, d):
         forAllChildren(d, waMarkPrecise)
+    popMarkStack()
 
   proc markGlobals(gch: var GcHeap) =
     for i in 0 .. < globalMarkersLen: globalMarkers[i]()
@@ -659,12 +779,27 @@ when logGC:
       forAllChildren(s, waDebug)
       c_fprintf(stdout, "}\n")
 
+proc dumpMarkStack() =
+  inc(gch.recGcLock)
+
+  var i = gch.markStack.len - 1
+  echo "STACK TOP"
+  while i >= 0:
+    if not gch.markStackFieldNames[i].isNil:
+      c_fprintf(stdout, "field: %s\n", gch.markStackFieldNames[i])
+    writeCell("yo", gch.markStack.d[i])
+    dec i
+  echo "STACK BOTTOM"
+
+  dec(gch.recGcLock)
+
 proc doOperation(p: pointer, op: WalkOp) =
   if p == nil: return
   var c: PCell = usrToCell(p)
   gcAssert(c != nil, "doOperation: 1")
   # the 'case' should be faster than function pointers because of easy
   # prediction:
+  pushMarkStack(c)
   case op
   of waZctDecRef:
     #if not isAllocatedPtr(gch.region, c):
@@ -687,8 +822,13 @@ proc doOperation(p: pointer, op: WalkOp) =
         markS(gch, c)
   of waMarkPrecise:
     when useMarkForDebug or useBackupGc:
+      if c == gch.debugCell:
+        echo "MARK DEBUG CELL!"
+        #echo getStackTrace()
+        dumpMarkStack()
       add(gch.tempStack, c)
   #of waDebug: debugGraph(c)
+  popMarkStack()
 
 proc nimGCvisit(d: pointer, op: int) {.compilerRtl.} =
   doOperation(d, WalkOp(op))
@@ -720,6 +860,8 @@ proc gcMark(gch: var GcHeap, p: pointer) {.inline.} =
     var objStart = cast[PCell](interiorAllocatedPtr(gch.region, cell))
     if objStart != nil:
       # mark the cell:
+      if objStart == gch.debugCell:
+        echo "DEBUG CELL MET ON STACK"
       objStart.refcount = objStart.refcount +% rcIncrement
       add(gch.decStack, objStart)
     when false:
@@ -909,12 +1051,20 @@ when not defined(useNimRtl):
     # set to the max value to suppress the cycle detector
 
   proc GC_fullCollect() =
+    echo "full collect"
     acquire(gch)
     var oldThreshold = gch.cycleThreshold
     gch.cycleThreshold = 0 # forces cycle collection
     collectCT(gch)
     gch.cycleThreshold = oldThreshold
     release(gch)
+
+  proc GC_debugCellType*(p: pointer) =
+    writeCell("debug", usrToCell(p))
+
+  proc GC_objectShouldBeCollectedSoon*(o: ref) =
+    gch.debugCell = usrToCell(cast[pointer](o))
+    echo "Setting debug cell: ", cast[int](gch.debugCell)
 
   proc GC_getStatistics(): string =
     GC_disable()
