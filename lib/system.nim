@@ -2575,6 +2575,8 @@ when not defined(nimscript) and hasAlloc:
       ## forces a full garbage collection pass.
       ## Ordinary code does not need to call this (and should not).
 
+    proc GC_objectShouldBeCollectedSoon*(o: ref) {.rtl, benign.}
+
     proc GC_enableMarkAndSweep*() {.rtl, benign.}
     proc GC_disableMarkAndSweep*() {.rtl, benign.}
       ## the current implementation uses a reference counting garbage collector
