@@ -138,6 +138,7 @@ proc importModuleAs(c: PContext; n: PNode, realModule: PSym): PSym =
                                c.config.options)
 
 proc myImportModule(c: PContext, n: PNode; importStmtResult: PNode): PSym =
+  pushInfoContext(c.config, n.info)
   let f = checkModuleName(c.config, n)
   if f != InvalidFileIDX:
     let L = c.graph.importStack.len
@@ -168,6 +169,8 @@ proc myImportModule(c: PContext, n: PNode; importStmtResult: PNode): PSym =
     suggestSym(c.config, n.info, result, c.graph.usageSym, false)
     importStmtResult.add newSymNode(result, n.info)
     #newStrNode(toFullPath(c.config, f), n.info)
+    #suggestSym(n.info, result, false)
+  popInfoContext(c.config)
 
 proc transformImportAs(c: PContext; n: PNode): PNode =
   if n.kind == nkInfix and considerQuotedIdent(c, n[0]).s == "as":
