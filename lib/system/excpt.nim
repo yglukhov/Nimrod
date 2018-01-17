@@ -343,26 +343,14 @@ proc raiseExceptionAux(e: ref Exception) =
           showErrorMessage(buf)
           quitOrDebug()
       else:
-        # ugly, but avoids heap allocations :-)
-        template xadd(buf, s, slen) =
-          if L + slen < high(buf):
-            copyMem(addr(buf[L]), cstring(s), slen)
-            inc L, slen
-        template add(buf, s) =
-          xadd(buf, s, s.len)
-        var buf: array[0..2000, char]
-        var L = 0
+        var buf = newStringOfCap(2000)
         add(buf, "Error: unhandled exception: ")
         if not isNil(e.msg): add(buf, e.msg)
         add(buf, " [")
-        xadd(buf, e.name, e.name.len)
+        add(buf, $e.name)
         add(buf, "]\n")
-        when defined(nimNoArrayToCstringConversion):
-          template tbuf(): untyped = addr buf
-        else:
-          template tbuf(): untyped = buf
-        unhandled(tbuf()):
-          showErrorMessage(tbuf())
+        unhandled(buf):
+          showErrorMessage(buf)
           quitOrDebug()
 
 proc raiseException(e: ref Exception, ename: cstring) {.compilerRtl.} =
