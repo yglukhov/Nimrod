@@ -565,6 +565,8 @@ proc growObj(old: pointer, newsize: int, gch: var GcHeap): pointer =
           dec(j)
       beforeDealloc(gch, ol, "growObj stack trash")
       decTypeSize(ol, ol.typ)
+      when defined(nimpydebug):
+        c_printf("dealloc1 %p\n", cellToUsr(ol))
       rawDealloc(gch.region, ol)
     else:
       # we split the old refcount in 2 parts. XXX This is still not entirely
@@ -600,6 +602,8 @@ proc freeCyclicCell(gch: var GcHeap, c: PCell) =
   when reallyDealloc:
     sysAssert(allocInv(gch.region), "free cyclic cell")
     beforeDealloc(gch, c, "freeCyclicCell: stack trash")
+    when defined(nimpydebug):
+      c_printf("dealloc2 %p\n", cellToUsr(c))
     rawDealloc(gch.region, c)
   else:
     gcAssert(c.typ != nil, "freeCyclicCell")
@@ -766,6 +770,8 @@ proc collectZCT(gch: var GcHeap): bool =
       when reallyDealloc:
         sysAssert(allocInv(gch.region), "collectZCT: rawDealloc")
         beforeDealloc(gch, c, "collectZCT: stack trash")
+        when defined(nimpydebug):
+          c_printf("dealloc3 %p\n", cellToUsr(c))
         rawDealloc(gch.region, c)
       else:
         sysAssert(c.typ != nil, "collectZCT 2")
