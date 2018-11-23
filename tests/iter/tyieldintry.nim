@@ -468,4 +468,3 @@ block: #9716
   test(it, 1, 1, 1)
 
 echo "ok"
-
