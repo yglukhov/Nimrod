@@ -1465,6 +1465,9 @@ proc setGenericParamsMisc(c: PContext; n: PNode): PNode =
     n.sons[miscPos].sons[1] = orig
   n.sons[genericParamsPos] = result
 
+proc anonIdent(c: PContext, i: TLineInfo): PIdent =
+  c.cache.getIdent(":anonymous-" & toFilename(c.config, i.fileIndex) & "-" & $i.line)
+
 proc semLambda(c: PContext, n: PNode, flags: TExprFlags): PNode =
   # XXX semProcAux should be good enough for this now, we will eventually
   # remove semLambda
@@ -1474,7 +1477,7 @@ proc semLambda(c: PContext, n: PNode, flags: TExprFlags): PNode =
   checkSonsLen(n, bodyPos + 1, c.config)
   var s: PSym
   if n[namePos].kind != nkSym:
-    s = newSym(skProc, c.cache.idAnon, getCurrOwner(c), n.info)
+    s = newSym(skProc, c.anonIdent(n.info), getCurrOwner(c), n.info)
     s.ast = n
     n.sons[namePos] = newSymNode(s)
   else:
@@ -1765,7 +1768,7 @@ proc semProcAux(c: PContext, n: PNode, kind: TSymKind,
     assert phase == stepRegisterSymbol
 
     if n[namePos].kind == nkEmpty:
-      s = newSym(kind, c.cache.idAnon, getCurrOwner(c), n.info)
+      s = newSym(kind, c.anonIdent(n.info), getCurrOwner(c), n.info)
       incl(s.flags, sfUsed)
       isAnon = true
     else:

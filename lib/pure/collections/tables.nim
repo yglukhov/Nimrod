@@ -233,6 +233,7 @@ type
     ## For creating an empty Table, use `initTable proc<#initTable,int>`_.
     data: KeyValuePairSeq[A, B]
     counter: int
+    iterating: bool
   TableRef*[A, B] = ref Table[A, B] ## Ref version of `Table<#Table>`_.
     ##
     ## For creating a new empty TableRef, use `newTable proc
@@ -322,6 +323,7 @@ proc `[]=`*[A, B](t: var Table[A, B], key: A, val: B) =
     a['y'] = 33
     doAssert a == {'x': 7, 'y': 33}.toTable
 
+  assert(not t.iterating)
   putImpl(enlarge)
 
 proc toTable*[A, B](pairs: openArray[(A, B)]): Table[A, B] =
@@ -425,6 +427,7 @@ proc hasKeyOrPut*[A, B](t: var Table[A, B], key: A, val: B): bool =
       a['z'] = 99
     doAssert a == {'a': 99, 'b': 9, 'z': 50}.toTable
 
+  assert(not t.iterating)
   hasKeyOrPutImpl(enlarge)
 
 proc getOrDefault*[A, B](t: Table[A, B], key: A): B =
@@ -482,6 +485,7 @@ proc mgetOrPut*[A, B](t: var Table[A, B], key: A, val: B): var B =
     doAssert a.mgetOrPut('z', 99) == 99
     doAssert a == {'a': 5, 'b': 9, 'z': 99}.toTable
 
+  assert(not t.iterating)
   mgetOrPutImpl(enlarge)
 
 proc len*[A, B](t: Table[A, B]): int =
@@ -499,6 +503,7 @@ proc add*[A, B](t: var Table[A, B], key: A, val: B) =
   ##
   ## Use `[]= proc<#[]=,Table[A,B],A,B>`_ for inserting a new
   ## (key, value) pair in the table without introducing duplicates.
+  assert(not t.iterating)
   addImpl(enlarge)
 
 proc del*[A, B](t: var Table[A, B], key: A) =
@@ -514,6 +519,7 @@ proc del*[A, B](t: var Table[A, B], key: A) =
     a.del('z')
     doAssert a == {'b': 9, 'c': 13}.toTable
 
+  assert(not t.iterating)
   delImpl()
 
 proc take*[A, B](t: var Table[A, B], key: A, val: var B): bool =
@@ -537,6 +543,7 @@ proc take*[A, B](t: var Table[A, B], key: A, val: var B): bool =
     doAssert a == {'a': 5, 'c': 13}.toTable
     doAssert i == 0
 
+  assert(not t.iterating)
   var hc: Hash
   var index = rawGet(t, key, hc)
   result = index >= 0
@@ -556,6 +563,7 @@ proc clear*[A, B](t: var Table[A, B]) =
     clear(a)
     doAssert len(a) == 0
 
+  assert(not t.iterating)
   clearImpl()
 
 proc `$`*[A, B](t: Table[A, B]): string =
@@ -1160,6 +1168,9 @@ iterator values*[A, B](t: TableRef[A, B]): B =
     for v in a.values:
       doAssert v.len == 4
 
+  t.iterating = true
+  defer:
+    t.iterating = false
   let L = len(t)
   for h in 0 .. high(t.data):
     if isFilled(t.data[h].hcode):
